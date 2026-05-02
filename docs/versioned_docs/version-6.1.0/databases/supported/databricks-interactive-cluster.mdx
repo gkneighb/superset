@@ -1,0 +1,31 @@
+---
+title: Databricks Interactive Cluster
+sidebar_label: Databricks Interactive Cluster
+description: "Apache Hive is a data warehouse infrastructure built on Hadoop."
+hide_title: true
+---
+
+{/*
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+*/}
+
+import { DatabasePage } from '@site/src/components/databases';
+
+export const databaseInfo = {"time_grains":{"SECOND":true,"FIVE_SECONDS":false,"THIRTY_SECONDS":false,"MINUTE":true,"FIVE_MINUTES":false,"TEN_MINUTES":false,"FIFTEEN_MINUTES":false,"THIRTY_MINUTES":false,"HALF_HOUR":false,"HOUR":true,"SIX_HOURS":false,"DAY":true,"WEEK":true,"WEEK_STARTING_SUNDAY":true,"WEEK_STARTING_MONDAY":false,"WEEK_ENDING_SATURDAY":true,"WEEK_ENDING_SUNDAY":false,"MONTH":true,"QUARTER":true,"QUARTER_YEAR":false,"YEAR":true},"module":"superset.db_engine_specs.databricks","limit_method":1,"limit_clause":true,"joins":true,"subqueries":true,"alias_in_select":true,"alias_in_orderby":true,"time_groupby_inline":false,"alias_to_source_column":false,"order_by_not_in_select":false,"expressions_in_orderby":false,"cte_in_subquery":true,"max_column_name":767,"sql_comments":true,"escaped_colons":true,"masked_encrypted_extra":false,"column_type_mapping":true,"function_names":true,"user_impersonation":true,"file_upload":true,"get_extra_table_metadata":true,"dbapi_exception_mapping":false,"custom_errors":false,"dynamic_schema":true,"catalog":true,"dynamic_catalog":true,"ssh_tunneling":true,"query_cancelation":true,"get_metrics":false,"where_latest_partition":true,"expand_data":true,"query_cost_estimation":true,"sql_validation":false,"score":140,"max_score":201,"documentation":{"description":"Apache Hive is a data warehouse infrastructure built on Hadoop.","logo":"apache-hive.svg","homepage_url":"https://hive.apache.org/","categories":["Apache Projects","Query Engines","Open Source"],"pypi_packages":["pyhive"],"connection_string":"hive://hive@{hostname}:{port}/{database}","default_port":10000,"category":"Cloud Data Warehouses"},"engine":"databricks","engine_name":"Databricks Interactive Cluster","engine_aliases":[],"default_driver":"pyhive","supports_file_upload":true,"supports_dynamic_schema":true,"supports_catalog":true,"supports_dynamic_catalog":true};
+
+<DatabasePage name="Databricks Interactive Cluster" database={databaseInfo} />

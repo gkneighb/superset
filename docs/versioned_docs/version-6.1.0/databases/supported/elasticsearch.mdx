@@ -1,0 +1,31 @@
+---
+title: Elasticsearch
+sidebar_label: Elasticsearch
+description: "Elasticsearch is a distributed search and analytics engine. Query data using Elasticsearch SQL or OpenSearch SQL syntax."
+hide_title: true
+---
+
+{/*
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+*/}
+
+import { DatabasePage } from '@site/src/components/databases';
+
+export const databaseInfo = {"time_grains":{"SECOND":true,"FIVE_SECONDS":false,"THIRTY_SECONDS":false,"MINUTE":true,"FIVE_MINUTES":false,"TEN_MINUTES":false,"FIFTEEN_MINUTES":false,"THIRTY_MINUTES":false,"HALF_HOUR":false,"HOUR":true,"SIX_HOURS":false,"DAY":true,"WEEK":true,"WEEK_STARTING_SUNDAY":false,"WEEK_STARTING_MONDAY":false,"WEEK_ENDING_SATURDAY":false,"WEEK_ENDING_SUNDAY":false,"MONTH":true,"QUARTER":false,"QUARTER_YEAR":false,"YEAR":true},"module":"superset.db_engine_specs.elasticsearch","limit_method":1,"limit_clause":true,"joins":false,"subqueries":true,"alias_in_select":true,"alias_in_orderby":true,"time_groupby_inline":true,"alias_to_source_column":false,"order_by_not_in_select":true,"expressions_in_orderby":false,"cte_in_subquery":true,"max_column_name":null,"sql_comments":false,"escaped_colons":true,"masked_encrypted_extra":false,"column_type_mapping":false,"function_names":false,"user_impersonation":false,"file_upload":true,"get_extra_table_metadata":false,"dbapi_exception_mapping":true,"custom_errors":false,"dynamic_schema":false,"catalog":false,"dynamic_catalog":false,"ssh_tunneling":true,"query_cancelation":false,"get_metrics":false,"where_latest_partition":false,"expand_data":false,"query_cost_estimation":false,"sql_validation":false,"score":37,"max_score":201,"documentation":{"description":"Elasticsearch is a distributed search and analytics engine. Query data using Elasticsearch SQL or OpenSearch SQL syntax.","logo":"elasticsearch.png","homepage_url":"https://www.elastic.co/elasticsearch/","categories":["Search & NoSQL","Open Source"],"pypi_packages":["elasticsearch-dbapi"],"connection_string":"elasticsearch+https://{user}:{password}@{host}:9243/","default_port":9243,"parameters":{"user":"Elasticsearch username","password":"Elasticsearch password","host":"Elasticsearch host"},"drivers":[{"name":"Elasticsearch SQL API (Recommended)","pypi_package":"elasticsearch-dbapi","connection_string":"elasticsearch+https://{user}:{password}@{host}:9243/","is_recommended":true,"notes":"For Elastic Cloud and self-hosted Elasticsearch with SQL enabled."},{"name":"OpenDistro / OpenSearch SQL","pypi_package":"elasticsearch-dbapi","connection_string":"odelasticsearch+https://{user}:{password}@{host}:9200/","is_recommended":false,"notes":"For OpenDistro Elasticsearch or Amazon OpenSearch Service."}],"compatible_databases":[{"name":"Elastic Cloud","description":"Elastic Cloud is the official managed Elasticsearch service from Elastic. It includes Elasticsearch, Kibana, and enterprise features with automatic scaling.","logo":"elasticsearch.png","homepage_url":"https://www.elastic.co/cloud/","categories":["Search & NoSQL","Hosted Open Source"],"pypi_packages":["elasticsearch-dbapi"],"connection_string":"elasticsearch+https://{user}:{password}@{deployment}.{region}.cloud.es.io:9243/","docs_url":"https://www.elastic.co/guide/en/cloud/current/"},{"name":"Amazon OpenSearch Service","description":"Amazon OpenSearch Service (successor to Amazon Elasticsearch Service) is a managed search and analytics service on AWS.","logo":"elasticsearch.png","homepage_url":"https://aws.amazon.com/opensearch-service/","categories":["Search & NoSQL","Cloud - AWS","Hosted Open Source"],"pypi_packages":["elasticsearch-dbapi"],"connection_string":"odelasticsearch+https://{user}:{password}@{host}:443/","docs_url":"https://docs.aws.amazon.com/opensearch-service/latest/developerguide/"}],"category":"Search & NoSQL"},"engine":"elasticsearch","engine_name":"Elasticsearch","engine_aliases":[],"default_driver":null,"supports_file_upload":true,"supports_dynamic_schema":false,"supports_catalog":false,"supports_dynamic_catalog":false};
+
+<DatabasePage name="Elasticsearch" database={databaseInfo} />

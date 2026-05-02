@@ -1,0 +1,31 @@
+---
+title: Firebird
+sidebar_label: Firebird
+description: "Firebird is an open-source relational database."
+hide_title: true
+---
+
+{/*
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+*/}
+
+import { DatabasePage } from '@site/src/components/databases';
+
+export const databaseInfo = {"time_grains":{"SECOND":true,"FIVE_SECONDS":false,"THIRTY_SECONDS":false,"MINUTE":true,"FIVE_MINUTES":false,"TEN_MINUTES":false,"FIFTEEN_MINUTES":false,"THIRTY_MINUTES":false,"HALF_HOUR":false,"HOUR":true,"SIX_HOURS":false,"DAY":true,"WEEK":false,"WEEK_STARTING_SUNDAY":false,"WEEK_STARTING_MONDAY":false,"WEEK_ENDING_SATURDAY":false,"WEEK_ENDING_SUNDAY":false,"MONTH":true,"QUARTER":false,"QUARTER_YEAR":false,"YEAR":true},"module":"superset.db_engine_specs.firebird","limit_method":3,"limit_clause":true,"joins":true,"subqueries":true,"alias_in_select":true,"alias_in_orderby":true,"time_groupby_inline":false,"alias_to_source_column":false,"order_by_not_in_select":true,"expressions_in_orderby":false,"cte_in_subquery":true,"max_column_name":null,"sql_comments":true,"escaped_colons":true,"masked_encrypted_extra":false,"column_type_mapping":false,"function_names":false,"user_impersonation":false,"file_upload":true,"get_extra_table_metadata":false,"dbapi_exception_mapping":false,"custom_errors":false,"dynamic_schema":false,"catalog":false,"dynamic_catalog":false,"ssh_tunneling":true,"query_cancelation":false,"get_metrics":false,"where_latest_partition":false,"expand_data":false,"query_cost_estimation":false,"sql_validation":false,"score":26,"max_score":201,"documentation":{"description":"Firebird is an open-source relational database.","logo":"firebird.png","homepage_url":"https://firebirdsql.org/","categories":["Traditional RDBMS","Open Source"],"pypi_packages":["sqlalchemy-firebird"],"version_requirements":"sqlalchemy-firebird>=0.7.0,<0.8","connection_string":"firebird+fdb://{username}:{password}@{host}:{port}//{path_to_db_file}","default_port":3050,"connection_examples":[{"description":"Local database","connection_string":"firebird+fdb://SYSDBA:masterkey@192.168.86.38:3050//Library/Frameworks/Firebird.framework/Versions/A/Resources/examples/empbuild/employee.fdb"}],"category":"Other Databases"},"engine":"firebird","engine_name":"Firebird","engine_aliases":[],"default_driver":null,"supports_file_upload":true,"supports_dynamic_schema":false,"supports_catalog":false,"supports_dynamic_catalog":false};
+
+<DatabasePage name="Firebird" database={databaseInfo} />
