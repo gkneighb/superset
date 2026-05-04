@@ -58,16 +58,34 @@ function fixVersionedImports(section, version) {
 
   console.log(`  Fixing relative imports in ${versionedDocsDir}...`);
 
-  function walk(dir) {
+  // Imports whose `../` count exceeds the file's depth within the section
+  // escape the section root, so they need one extra `../` once the file
+  // lives one level deeper inside the snapshot dir. Imports that stay
+  // inside the section are unaffected (the section copies wholesale).
+  function walk(dir, depth) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        walk(fullPath);
+        walk(fullPath, depth + 1);
       } else if (entry.isFile() && /\.(md|mdx)$/.test(entry.name)) {
         const original = fs.readFileSync(fullPath, 'utf8');
-        const updated = original
-          .replace(/from ['"]\.\.\/\.\.\/src\//g, "from '../../../src/")
-          .replace(/from ['"]\.\.\/\.\.\/data\//g, "from '../../../data/");
+        // Track fenced code blocks so we don't rewrite import samples inside
+        // ```ts / ```js (etc.) blocks that are documentation, not real imports.
+        let inFence = false;
+        const updated = original.split('\n').map(line => {
+          if (/^\s*(```|~~~)/.test(line)) {
+            inFence = !inFence;
+            return line;
+          }
+          if (inFence) return line;
+          return line.replace(
+            /(from\s+['"])((?:\.\.\/)+)/g,
+            (match, prefix, dots) => {
+              const upCount = dots.match(/\.\.\//g).length;
+              return upCount > depth ? `${prefix}../${dots}` : match;
+            },
+          );
+        }).join('\n');
         if (updated !== original) {
           fs.writeFileSync(fullPath, updated);
           const rel = path.relative(versionedDocsPath, fullPath);
@@ -77,7 +95,7 @@ function fixVersionedImports(section, version) {
     }
   }
 
-  walk(versionedDocsPath);
+  walk(versionedDocsPath, 0);
 }
 
 function addVersion(section, version) {

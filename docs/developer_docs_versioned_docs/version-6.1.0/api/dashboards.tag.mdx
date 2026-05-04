@@ -25,7 +25,9 @@ Create, read, update, and delete dashboards.
 | `DELETE` | [Delete a dashboard](./delete-a-dashboard) | `/api/v1/dashboard/{pk}` |
 | `PUT` | [Update a dashboard](./update-a-dashboard) | `/api/v1/dashboard/{pk}` |
 | `POST` | [Compute and cache a screenshot (dashboard-pk-cache-dashboard-screenshot)](./compute-and-cache-a-screenshot-dashboard-pk-cache-dashboard-screenshot) | `/api/v1/dashboard/{pk}/cache_dashboard_screenshot/` |
+| `PUT` | [Update chart customizations configuration for a dashboard.](./update-chart-customizations-configuration-for-a-dashboard) | `/api/v1/dashboard/{pk}/chart_customizations` |
 | `PUT` | [Update colors configuration for a dashboard.](./update-colors-configuration-for-a-dashboard) | `/api/v1/dashboard/{pk}/colors` |
+| `GET` | [Export dashboard as example bundle](./export-dashboard-as-example-bundle) | `/api/v1/dashboard/{pk}/export_as_example/` |
 | `DELETE` | [Remove the dashboard from the user favorite list](./remove-the-dashboard-from-the-user-favorite-list) | `/api/v1/dashboard/{pk}/favorites/` |
 | `POST` | [Mark the dashboard as favorite for the current user](./mark-the-dashboard-as-favorite-for-the-current-user) | `/api/v1/dashboard/{pk}/favorites/` |
 | `PUT` | [Update native filters configuration for a dashboard.](./update-native-filters-configuration-for-a-dashboard) | `/api/v1/dashboard/{pk}/filters` |

@@ -40,7 +40,7 @@ installation documentations ([Docker Compose](/admin-docs/installation/docker-co
 
 ## Supported Databases
 
-Superset supports **80 databases** with varying levels of feature support.
+Superset supports **73 databases** with varying levels of feature support.
 Click on any database name to see detailed documentation including connection strings,
 authentication methods, and configuration options.
 
@@ -91,3 +91,14 @@ To add or update database documentation, add a `metadata` attribute to your engi
 
 See [METADATA_STATUS.md](https://github.com/apache/superset/blob/master/superset/db_engine_specs/METADATA_STATUS.md)
 for the current status of database documentation and the [README](https://github.com/apache/superset/blob/master/superset/db_engine_specs/README.md) for the metadata schema.
+
+:::info Developer Note
+This documentation was built without Flask context, so feature diagnostics (scores, time grain support, etc.)
+may not reflect actual database capabilities. For full diagnostics, build docs locally with:
+
+```bash
+cd docs && npm run gen-db-docs
+```
+
+This requires a working Superset development environment.
+:::
