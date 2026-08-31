@@ -34,9 +34,13 @@ if TYPE_CHECKING:
     from superset.connectors.sqla.models import SqlaTable
 
 from superset.constants import NO_TIME_RANGE
+from superset.mcp_service.chart.chart_helpers import (
+    MCP_DASHBOARD_TIME_FILTER_SUBJECT,
+)
 from superset.mcp_service.chart.schemas import (
     BigNumberChartConfig,
     BoxPlotChartConfig,
+    BUBBLE_NATIVE_PRESENTATION_FIELDS,
     BubbleChartConfig,
     ChartCapabilities,
     ChartConfig,
@@ -62,8 +66,6 @@ from superset.utils import json
 from superset.utils.core import FilterOperator
 
 logger = logging.getLogger(__name__)
-
-MCP_DASHBOARD_TIME_FILTER_SUBJECT = "_mcp_dashboard_time_filter_subject"
 
 
 @dataclass
@@ -599,6 +601,26 @@ def merge_interactive_pivot_ui_config(
         new_form_data["pivot_table_state"] = {**existing_state, **new_state}
 
 
+def merge_bubble_presentation_config(
+    existing_form_data: Mapping[str, Any], new_form_data: Dict[str, Any]
+) -> None:
+    """Preserve UI-managed Bubble presentation fields on typed updates.
+
+    Query-defining fields (entity, metrics, filters, ordering, and time range)
+    remain controlled by the replacement config. Presentation values supplied
+    explicitly by a native Bubble round trip win; otherwise the saved UI state
+    survives an MCP update.
+    """
+    if (
+        existing_form_data.get("viz_type") != "bubble_v2"
+        or new_form_data.get("viz_type") != "bubble_v2"
+    ):
+        return
+    for key in BUBBLE_NATIVE_PRESENTATION_FIELDS:
+        if key in existing_form_data and key not in new_form_data:
+            new_form_data[key] = existing_form_data[key]
+
+
 def create_metric_object(col: ColumnRef) -> Dict[str, Any] | str:
     """Create a metric object for a column with enhanced validation.
 
@@ -1064,6 +1086,23 @@ def map_bubble_config(config: BubbleChartConfig) -> Dict[str, Any]:
     }
     if config.series:
         form_data["series"] = config.series.name
+    if config.order_by is not None:
+        form_data["orderby"] = create_metric_object(config.order_by)
+    if config.order_desc is not None:
+        form_data["order_desc"] = config.order_desc
+    if config.time_range is not None:
+        form_data["time_range"] = config.time_range
+    if config.granularity is not None:
+        form_data["granularity"] = config.granularity
+    if config.presentation is not None:
+        presentation = config.presentation.model_dump(exclude_none=True)
+        form_data.update(
+            {
+                native_key: presentation[typed_key]
+                for native_key, typed_key in BUBBLE_NATIVE_PRESENTATION_FIELDS.items()
+                if typed_key in presentation
+            }
+        )
     _add_adhoc_filters(form_data, config.filters)
     return form_data
 
@@ -1706,6 +1745,7 @@ def analyze_chart_capabilities(viz_type: str | None, config: Any) -> ChartCapabi
         "deck_hex",
         "ag-grid-table",  # AG Grid tables are interactive
         "ag-grid-pivot-table",
+        "bubble_v2",
     ]
 
     supports_interaction = viz_type in interactive_types
@@ -1728,9 +1768,11 @@ def analyze_chart_capabilities(viz_type: str | None, config: Any) -> ChartCapabi
 
     # Classify data types
     data_types = []
-    if hasattr(config, "x") and config.x:
+    if isinstance(config, BubbleChartConfig):
+        data_types.extend(["categorical", "metric"])
+    elif hasattr(config, "x") and config.x:
         data_types.append("categorical" if not config.x.is_metric else "metric")
-    if hasattr(config, "y") and config.y:
+    if not isinstance(config, BubbleChartConfig) and hasattr(config, "y") and config.y:
         data_types.extend(["metric"] * len(config.y))
     if "time" in viz_type or "timeseries" in viz_type:
         data_types.append("time_series")
@@ -1784,6 +1826,10 @@ def analyze_chart_semantics(viz_type: str | None, config: Any) -> ChartSemantics
         "big_number_total": (
             "Highlights a single key metric value as a prominent number"
         ),
+        "bubble_v2": (
+            "Shows relationships among three metrics through horizontal position, "
+            "vertical position, and bubble size"
+        ),
     }
 
     primary_insight = insights_map.get(
@@ -1791,10 +1837,19 @@ def analyze_chart_semantics(viz_type: str | None, config: Any) -> ChartSemantics
     )
 
     # Generate data story
-    columns = []
-    if hasattr(config, "x") and config.x:
+    columns: list[str] = []
+    if isinstance(config, BubbleChartConfig):
+        refs = [config.entity, config.x, config.y, config.size]
+        if config.series is not None:
+            refs.append(config.series)
+        columns.extend(
+            label
+            for ref in refs
+            if (label := ref.name or ref.label or ref.sql_expression) is not None
+        )
+    elif hasattr(config, "x") and config.x:
         columns.append(config.x.name)
-    if hasattr(config, "y") and config.y:
+    if not isinstance(config, BubbleChartConfig) and hasattr(config, "y") and config.y:
         # SQL metrics have no name; fall back to label or the expression.
         columns.extend(
             [col.name or col.label or col.sql_expression for col in config.y]

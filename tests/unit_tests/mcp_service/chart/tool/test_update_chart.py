@@ -32,6 +32,7 @@ from superset.mcp_service.chart.chart_helpers import find_chart_by_identifier
 from superset.mcp_service.chart.chart_utils import DatasetValidationResult
 from superset.mcp_service.chart.schemas import (
     AxisConfig,
+    BubbleChartConfig,
     ColumnRef,
     FilterConfig,
     GenerateChartResponse,
@@ -737,6 +738,40 @@ class TestBuildUpdatePayload:
         assert result["slice_name"] == "Existing Name"
         # query_context must be cleared so get_chart_data uses updated params
         assert result["query_context"] is None
+
+    def test_typed_bubble_update_preserves_saved_presentation_state(self):
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="country"),
+            x=ColumnRef(name="gdp", aggregate="AVG"),
+            y=ColumnRef(name="life_expectancy", aggregate="AVG"),
+            size=ColumnRef(name="population", aggregate="SUM"),
+        )
+        request = UpdateChartRequest(identifier=1, config=config)
+        chart = Mock(
+            datasource_id=None,
+            slice_name="Bubble",
+            params=json.dumps(
+                {
+                    "viz_type": "bubble_v2",
+                    "entity": "country",
+                    "max_bubble_size": "75",
+                    "opacity": 0.4,
+                    "xAxisFormat": "$,.2f",
+                    "tooltipSizeFormat": ",.0f",
+                    "annotation_layers": [],
+                }
+            ),
+        )
+
+        result = _build_update_payload(request, chart, parsed_config=config)
+
+        assert isinstance(result, dict)
+        params = json.loads(result["params"])
+        assert params["max_bubble_size"] == "75"
+        assert params["opacity"] == 0.4
+        assert params["xAxisFormat"] == "$,.2f"
+        assert params["tooltipSizeFormat"] == ",.0f"
+        assert params["annotation_layers"] == []
 
     def test_add_columns_preserves_existing_columns_and_metrics(self):
         """An additive update does not require reconstructing the table."""

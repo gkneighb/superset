@@ -112,11 +112,15 @@ def build_dataset_context_from_orm(dataset: Any) -> DatasetContext | None:
 
     metrics: List[Dict[str, Any]] = []
     for metric in getattr(dataset, "metrics", []) or []:
+        metric_type = getattr(metric, "metric_type", None)
+        d3format = getattr(metric, "d3format", None)
         metrics.append(
             {
                 "name": metric.metric_name,
                 "expression": metric.expression,
                 "description": metric.description,
+                "metric_type": metric_type if isinstance(metric_type, str) else None,
+                "d3format": d3format if isinstance(d3format, str) else None,
             }
         )
 
@@ -206,6 +210,18 @@ class DatasetValidator:
         )
         if aggregation_errors:
             return False, aggregation_errors[0]
+
+        # Some visual encodings impose stricter requirements than SQL itself.
+        # For example, Bubble's x/y/size channels must produce numbers even
+        # though many databases allow MIN/MAX over text. Keep those checks in
+        # the owning plugin rather than adding chart-specific branches here.
+        from superset.mcp_service.chart.registry import get_registry
+
+        plugin = get_registry().get(getattr(config, "chart_type", ""))
+        if plugin is not None:
+            plugin_error = plugin.validate_dataset(config, dataset_context)
+            if plugin_error is not None:
+                return False, plugin_error
 
         return True, None
 

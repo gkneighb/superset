@@ -23,16 +23,27 @@ path so fast-path tools (``generate_explore_link``, ``update_chart_preview``)
 that only use Tier-1 validation are exercised end-to-end.
 """
 
+import time
 from unittest.mock import Mock, patch
 
 import pytest
 
+from superset.mcp_service.chart.chart_utils import map_bubble_config
 from superset.mcp_service.chart.compile import (
     CompileResult,
     validate_and_compile,
 )
+from superset.mcp_service.chart.plugins.bubble import (
+    _MAX_SQL_EXPRESSION_DEPTH,
+    _MAX_SQL_EXPRESSION_LENGTH,
+    _MAX_SQL_EXPRESSION_TOKENS,
+    _tokenize_sql,
+    bubble_metric_output_status,
+    bubble_metrics_requiring_query_validation,
+)
 from superset.mcp_service.chart.schemas import (
     BigNumberChartConfig,
+    BubbleChartConfig,
     ColumnRef,
     FilterConfig,
     PieChartConfig,
@@ -148,6 +159,606 @@ class TestValidateAndCompileChartTypeCoverage:
         )
         result = validate_and_compile(config, {}, ds, run_compile_check=False)
         assert result.success, result.error
+
+    @pytest.mark.parametrize("field", ["x", "y", "size"])
+    def test_bubble_sum_on_non_numeric_column_rejected(self, field):
+        ds = _orm_dataset()
+        metrics = {
+            "x": ColumnRef(name="num", aggregate="AVG"),
+            "y": ColumnRef(name="num", aggregate="MAX"),
+            "size": ColumnRef(name="num", aggregate="SUM"),
+        }
+        metrics[field] = ColumnRef(name="gender", aggregate="SUM")
+        config = BubbleChartConfig(entity=ColumnRef(name="name"), **metrics)
+
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+
+        assert not result.success
+        assert result.error_obj is not None
+        assert result.error_obj.error_code == "INVALID_AGGREGATION"
+
+    def test_bubble_numeric_metrics_pass(self):
+        ds = _orm_dataset()
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="num", aggregate="AVG"),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+
+        assert result.success, result.error
+
+    @pytest.mark.parametrize(
+        "sql_type",
+        ["INT2", "INT4", "INT8", "FLOAT8", "MEDIUMINT", "SMALLMONEY"],
+    )
+    def test_bubble_uses_shared_numeric_sql_type_detection(self, sql_type):
+        ds = _orm_dataset()
+        numeric = next(column for column in ds.columns if column.column_name == "num")
+        numeric.is_numeric = False
+        numeric.type = sql_type
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="num", aggregate="AVG"),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+
+        assert result.success, result.error
+
+    @pytest.mark.parametrize("aggregate", ["MIN", "MAX"])
+    @pytest.mark.parametrize("field", ["x", "y", "size"])
+    def test_bubble_min_max_on_text_rejected(self, aggregate, field):
+        ds = _orm_dataset()
+        metrics = {
+            "x": ColumnRef(name="num", aggregate="AVG"),
+            "y": ColumnRef(name="num", aggregate="MAX"),
+            "size": ColumnRef(name="num", aggregate="SUM"),
+        }
+        metrics[field] = ColumnRef(name="gender", aggregate=aggregate)
+
+        result = validate_and_compile(
+            BubbleChartConfig(entity=ColumnRef(name="name"), **metrics),
+            {},
+            ds,
+            run_compile_check=False,
+        )
+
+        assert not result.success
+        assert result.error_obj is not None
+        assert result.error_obj.error_code == "INVALID_BUBBLE_METRIC_OUTPUT"
+
+    @pytest.mark.parametrize("aggregate", ["COUNT", "COUNT_DISTINCT"])
+    def test_bubble_count_over_text_is_numeric(self, aggregate):
+        ds = _orm_dataset()
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="gender", aggregate=aggregate),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+
+        assert result.success, result.error
+
+    @pytest.mark.parametrize(
+        ("metric", "passes"),
+        [
+            (ColumnRef(name="saved_text", saved_metric=True), False),
+            (ColumnRef(name="saved_count", saved_metric=True), True),
+            (ColumnRef(name="saved_sum", saved_metric=True), True),
+            (ColumnRef(sql_expression="MAX(gender)", label="Text max"), False),
+            (ColumnRef(sql_expression="COUNT(gender)", label="Count"), True),
+            (
+                ColumnRef(sql_expression="SUM(num)", label="Custom numeric alias"),
+                True,
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("field", ["x", "y", "size"])
+    def test_bubble_saved_and_sql_metric_output_inference(self, metric, passes, field):
+        ds = _orm_dataset(metric_names=["saved_text", "saved_count", "saved_sum"])
+        expressions = {
+            "saved_text": "MAX(gender)",
+            "saved_count": "COUNT(gender)",
+            "saved_sum": "SUM(num)",
+        }
+        for saved_metric in ds.metrics:
+            saved_metric.expression = expressions[saved_metric.metric_name]
+            saved_metric.metric_type = None
+            saved_metric.d3format = None
+        metrics = {
+            "x": ColumnRef(name="num", aggregate="AVG"),
+            "y": ColumnRef(name="num", aggregate="MAX"),
+            "size": ColumnRef(name="num", aggregate="SUM"),
+        }
+        metrics[field] = metric
+        config = BubbleChartConfig(entity=ColumnRef(name="name"), **metrics)
+
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+
+        assert result.success is passes
+        if not passes:
+            assert result.error_obj is not None
+            assert result.error_obj.error_code == "INVALID_BUBBLE_METRIC_OUTPUT"
+
+    @patch("superset.mcp_service.chart.compile._compile_chart")
+    def test_unproven_saved_metric_forces_query_on_tier_one_path(self, mock_compile):
+        ds = _orm_dataset(metric_names=["complex_metric"])
+        ds.metrics[0].expression = "SOME_VENDOR_FUNCTION(gender)"
+        ds.metrics[0].metric_type = "sum"
+        ds.metrics[0].d3format = None
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="complex_metric", saved_metric=True),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+        mock_compile.return_value = CompileResult(success=True)
+
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+
+        assert result.success
+        mock_compile.assert_called_once_with(
+            {}, ds.id, bubble_runtime_validation_required=True
+        )
+
+    @patch("superset.commands.chart.data.get_data_command.ChartDataCommand")
+    @patch("superset.common.query_context_factory.QueryContextFactory")
+    def test_empty_bubble_compile_passes_with_static_numeric_proof(
+        self, mock_factory, mock_command
+    ):
+        ds = _orm_dataset()
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="num", aggregate="AVG"),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+        mock_factory.return_value.create.return_value = Mock()
+        mock_command.return_value.run.return_value = {"queries": [{"data": []}]}
+
+        result = validate_and_compile(
+            config,
+            map_bubble_config(config),
+            ds,
+            run_compile_check=True,
+        )
+
+        assert result.success, result.error
+        assert result.row_count == 0
+
+    @patch("superset.commands.chart.data.get_data_command.ChartDataCommand")
+    @patch("superset.common.query_context_factory.QueryContextFactory")
+    def test_empty_bubble_compile_fails_when_runtime_proof_is_required(
+        self, mock_factory, mock_command
+    ):
+        ds = _orm_dataset(metric_names=["complex_metric"])
+        ds.metrics[0].expression = "SOME_VENDOR_FUNCTION(gender)"
+        ds.metrics[0].metric_type = "sum"
+        ds.metrics[0].d3format = None
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="complex_metric", saved_metric=True),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+        mock_factory.return_value.create.return_value = Mock()
+        mock_command.return_value.run.return_value = {"queries": [{"data": []}]}
+
+        result = validate_and_compile(
+            config,
+            map_bubble_config(config),
+            ds,
+            run_compile_check=False,
+        )
+
+        assert not result.success
+        assert result.error_obj is not None
+        assert result.error_obj.error_code == "INVALID_BUBBLE_QUERY_DATA"
+        assert "could not be verified" in result.error_obj.message
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "SUM(CAST(name AS VARCHAR /* INT */))",
+            "AVG(CAST(name AS TEXT -- DOUBLE\n))",
+            "MEDIAN(CAST(name AS VARCHAR /* DECIMAL */))",
+            "STDDEV(CAST(name AS VARCHAR /* DECIMAL */))",
+            "STDDEV_SAMP(CAST(name AS VARCHAR /* DECIMAL */))",
+            "VAR(CAST(name AS VARCHAR /* DECIMAL */))",
+            "VAR_SAMP(CAST(name AS VARCHAR /* DECIMAL */))",
+            "PERCENTILE(CAST(name AS VARCHAR /* DECIMAL */), 0.5)",
+            "SUM(((CAST(name AS VARCHAR /* misleading ) INT ( */))))",
+        ],
+    )
+    def test_bubble_numeric_aggregate_requires_proven_nested_argument(
+        self, expression: str
+    ) -> None:
+        """Aggregate wrappers must not hide ambiguous nested CAST targets."""
+        ds = _orm_dataset(metric_names=["nested_cast"])
+        ds.metrics[0].expression = expression
+        ds.metrics[0].metric_type = None
+        ds.metrics[0].d3format = None
+        context = build_dataset_context_from_orm(ds)
+        assert context is not None
+        metric = ColumnRef(name="nested_cast", saved_metric=True)
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=metric,
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+
+        assert bubble_metric_output_status(metric, context) == "unknown"
+        assert bubble_metrics_requiring_query_validation(config, context) == ["x"]
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "SUM(CAST(name AS VARCHAR /* INT */))",
+            "AVG(CAST(name AS TEXT -- DOUBLE\n))",
+        ],
+    )
+    @patch("superset.mcp_service.chart.compile._compile_chart")
+    def test_bubble_nested_commented_cast_forces_query_on_no_compile_path(
+        self, mock_compile: Mock, expression: str
+    ) -> None:
+        """A requested no-query path must execute when nested proof is unknown."""
+        ds = _orm_dataset(metric_names=["nested_cast"])
+        ds.metrics[0].expression = expression
+        ds.metrics[0].metric_type = None
+        ds.metrics[0].d3format = None
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="nested_cast", saved_metric=True),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+        mock_compile.return_value = CompileResult(success=True)
+
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+
+        assert result.success
+        mock_compile.assert_called_once_with(
+            {}, ds.id, bubble_runtime_validation_required=True
+        )
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "SUM(AVG(num))",
+            "MAX(SUM(num))",
+            "SUM(AVG(CAST(num AS DECIMAL(10, 2))))",
+        ],
+    )
+    @patch("superset.mcp_service.chart.compile._compile_chart")
+    def test_bubble_nested_set_aggregate_forces_query_on_no_compile_path(
+        self, mock_compile: Mock, expression: str
+    ) -> None:
+        """Invalid nested set aggregates must not receive static numeric proof."""
+        ds = _orm_dataset(metric_names=["nested_aggregate"])
+        ds.metrics[0].expression = expression
+        ds.metrics[0].metric_type = None
+        ds.metrics[0].d3format = None
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="nested_aggregate", saved_metric=True),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+        mock_compile.return_value = CompileResult(success=True)
+
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+
+        assert result.success
+        mock_compile.assert_called_once_with(
+            {}, ds.id, bubble_runtime_validation_required=True
+        )
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "SUM(AVG(num))",
+            "MAX(SUM(num))",
+            "SUM(AVG(CAST(num AS DECIMAL(10, 2))))",
+        ],
+    )
+    @patch("superset.commands.chart.data.get_data_command.ChartDataCommand")
+    @patch("superset.common.query_context_factory.QueryContextFactory")
+    def test_empty_bubble_nested_set_aggregate_fails_closed(
+        self,
+        mock_factory: Mock,
+        mock_command: Mock,
+        expression: str,
+    ) -> None:
+        """An empty result cannot validate an invalid nested set aggregate."""
+        ds = _orm_dataset(metric_names=["nested_aggregate"])
+        ds.metrics[0].expression = expression
+        ds.metrics[0].metric_type = None
+        ds.metrics[0].d3format = None
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="nested_aggregate", saved_metric=True),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+        mock_factory.return_value.create.return_value = Mock()
+        mock_command.return_value.run.return_value = {"queries": [{"data": []}]}
+
+        result = validate_and_compile(
+            config,
+            map_bubble_config(config),
+            ds,
+            run_compile_check=False,
+        )
+
+        assert not result.success
+        assert result.error_obj is not None
+        assert result.error_obj.error_code == "INVALID_BUBBLE_QUERY_DATA"
+        assert "could not be verified" in result.error_obj.message
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "SUM(" * 1_200 + "num" + ")" * 1_200,
+            "(" * 4_000 + "SUM(num)" + ")" * 4_000,
+        ],
+    )
+    @patch("superset.mcp_service.chart.compile._compile_chart")
+    def test_long_saved_metric_fails_to_runtime_proof_quickly(
+        self, mock_compile: Mock, expression: str
+    ) -> None:
+        """MediumText metrics beyond ColumnRef's limit remain bounded and safe."""
+        assert len(expression) > 2_000
+        ds = _orm_dataset(metric_names=["deep_metric"])
+        ds.metrics[0].expression = expression
+        ds.metrics[0].metric_type = None
+        ds.metrics[0].d3format = None
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="deep_metric", saved_metric=True),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+        mock_compile.return_value = CompileResult(success=True)
+
+        started = time.process_time()
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+        elapsed = time.process_time() - started
+
+        assert result.success
+        assert elapsed < 1.0
+        mock_compile.assert_called_once_with(
+            {}, ds.id, bubble_runtime_validation_required=True
+        )
+
+    @patch("superset.mcp_service.chart.compile._compile_chart")
+    def test_saved_metric_depth_and_length_budget_boundaries(
+        self, mock_compile: Mock
+    ) -> None:
+        """The documented static-inference depth and work bounds fail closed."""
+        ds = _orm_dataset(metric_names=["boundary_metric"])
+        ds.metrics[0].metric_type = None
+        ds.metrics[0].d3format = None
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="boundary_metric", saved_metric=True),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+
+        within_depth = (
+            "(" * (_MAX_SQL_EXPRESSION_DEPTH - 1)
+            + "SUM(num)"
+            + ")" * (_MAX_SQL_EXPRESSION_DEPTH - 1)
+        )
+        ds.metrics[0].expression = within_depth
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+        assert result.success
+        mock_compile.assert_not_called()
+
+        beyond_depth = f"({within_depth})"
+        ds.metrics[0].expression = beyond_depth
+        mock_compile.return_value = CompileResult(success=True)
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+        assert result.success
+        mock_compile.assert_called_once_with(
+            {}, ds.id, bubble_runtime_validation_required=True
+        )
+
+        mock_compile.reset_mock()
+        within_length = "SUM(num)".ljust(_MAX_SQL_EXPRESSION_LENGTH)
+        ds.metrics[0].expression = within_length
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+        assert result.success
+        mock_compile.assert_not_called()
+
+        ds.metrics[0].expression = within_length + " "
+        result = validate_and_compile(config, {}, ds, run_compile_check=False)
+        assert result.success
+        mock_compile.assert_called_once_with(
+            {}, ds.id, bubble_runtime_validation_required=True
+        )
+
+    def test_sql_token_complexity_budget_boundary(self) -> None:
+        """The tokenizer accepts its exact token budget and rejects one more."""
+        at_budget = ",".join("x" for _ in range(_MAX_SQL_EXPRESSION_TOKENS // 2))
+        at_budget += ","
+        parsed = _tokenize_sql(at_budget)
+        assert parsed is not None
+        assert len(parsed.tokens) == _MAX_SQL_EXPRESSION_TOKENS
+        assert _tokenize_sql(f"{at_budget}x") is None
+
+    @pytest.mark.parametrize(
+        ("expression", "expected_status"),
+        [
+            ("SUM(num)", "numeric"),
+            ("AVG((num))", "numeric"),
+            ("AVG(CAST(num AS DECIMAL))", "numeric"),
+            ("SUM(CAST(num AS DECIMAL(10, 2)))", "numeric"),
+            ("AVG(TRY_CAST(num AS DOUBLE PRECISION))", "numeric"),
+            ("SUM(CAST(num AS INT8))", "numeric"),
+            ("AVG(TRY_CAST(num AS FLOAT8))", "numeric"),
+            (
+                "SUM(CAST(COALESCE(num, '/* VARCHAR ) */ -- TEXT (') "
+                "AS DECIMAL(10, 2)))",
+                "numeric",
+            ),
+            ("CAST(MAX(name) AS VARCHAR)", "nonnumeric"),
+            ("SUM(CAST(name AS VARCHAR))", "nonnumeric"),
+        ],
+    )
+    def test_bubble_nested_aggregate_static_proofs(
+        self, expression: str, expected_status: str
+    ) -> None:
+        """Clean numeric proofs survive nesting and quoted comment-like text."""
+        ds = _orm_dataset(metric_names=["static_proof"])
+        ds.metrics[0].expression = expression
+        ds.metrics[0].metric_type = None
+        ds.metrics[0].d3format = None
+        context = build_dataset_context_from_orm(ds)
+        assert context is not None
+        metric = ColumnRef(name="static_proof", saved_metric=True)
+
+        assert bubble_metric_output_status(metric, context) == expected_status
+
+    @pytest.mark.parametrize(
+        ("metric_kind", "expression"),
+        [
+            ("saved", "COUNT(*) || COALESCE(MAX(name), '')"),
+            ("saved", "COUNT(*) > COALESCE(MAX(num), 0)"),
+            ("adhoc", "SUM(num) || MAX(name)"),
+            ("adhoc", "SUM(num) > COALESCE(MAX(num), 0)"),
+        ],
+    )
+    @patch("superset.commands.chart.data.get_data_command.ChartDataCommand")
+    @patch("superset.common.query_context_factory.QueryContextFactory")
+    def test_empty_bubble_compound_sql_requires_runtime_numeric_proof(
+        self,
+        mock_factory: Mock,
+        mock_command: Mock,
+        metric_kind: str,
+        expression: str,
+    ) -> None:
+        """String/boolean compounds must not inherit a numeric function's type."""
+        ds = _orm_dataset(
+            metric_names=["compound_metric"] if metric_kind == "saved" else None
+        )
+        if metric_kind == "saved":
+            ds.metrics[0].expression = expression
+            ds.metrics[0].metric_type = None
+            ds.metrics[0].d3format = None
+            metric = ColumnRef(name="compound_metric", saved_metric=True)
+        else:
+            metric = ColumnRef(sql_expression=expression, label="Compound metric")
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=metric,
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+        mock_factory.return_value.create.return_value = Mock()
+        mock_command.return_value.run.return_value = {"queries": [{"data": []}]}
+
+        result = validate_and_compile(
+            config,
+            map_bubble_config(config),
+            ds,
+            run_compile_check=False,
+        )
+
+        assert not result.success
+        assert result.error_obj is not None
+        assert result.error_obj.error_code == "INVALID_BUBBLE_QUERY_DATA"
+        assert "could not be verified" in result.error_obj.message
+
+    @pytest.mark.parametrize(
+        ("expression", "expected_error"),
+        [
+            ("CAST(MAX(name) AS VARCHAR /* INT */)", "INVALID_BUBBLE_QUERY_DATA"),
+            (
+                "CAST(MAX(name) AS BOOLEAN /* DECIMAL */)",
+                "INVALID_BUBBLE_QUERY_DATA",
+            ),
+            (
+                "TRY_CAST(MAX(name) AS TEXT /* DOUBLE */)",
+                "INVALID_BUBBLE_QUERY_DATA",
+            ),
+            (
+                "CAST(MAX(name) AS VARCHAR -- INT\n)",
+                "INVALID_BUBBLE_QUERY_DATA",
+            ),
+            ("CAST(MAX(name) AS VARCHAR INT)", "INVALID_BUBBLE_QUERY_DATA"),
+            ("CAST(MAX(name) AS VARCHAR)", "INVALID_BUBBLE_METRIC_OUTPUT"),
+            (
+                "CAST(COALESCE(MAX(name), '/* INT */ -- DECIMAL') AS TEXT)",
+                "INVALID_BUBBLE_METRIC_OUTPUT",
+            ),
+            (
+                "SUM(CAST(name AS VARCHAR /* INT */))",
+                "INVALID_BUBBLE_QUERY_DATA",
+            ),
+            (
+                "AVG(CAST(name AS TEXT -- DOUBLE\n))",
+                "INVALID_BUBBLE_QUERY_DATA",
+            ),
+            (
+                "SUM(((CAST(name AS VARCHAR /* misleading ) INT ( */))))",
+                "INVALID_BUBBLE_QUERY_DATA",
+            ),
+            ("SUM(CAST(name AS VARCHAR))", "INVALID_BUBBLE_METRIC_OUTPUT"),
+            ("CAST(MAX(num) AS INT)", None),
+            ("TRY_CAST(MAX(num) AS DOUBLE PRECISION)", None),
+            ("CAST((COALESCE(MAX(num), 0)) AS DECIMAL(10, 2))", None),
+            ("SUM(num)", None),
+            ("AVG(CAST(num AS DECIMAL(10, 2)))", None),
+            (
+                "SUM(CAST(COALESCE(num, '/* VARCHAR ) */ -- TEXT (') "
+                "AS DECIMAL(10, 2)))",
+                None,
+            ),
+        ],
+    )
+    @patch("superset.commands.chart.data.get_data_command.ChartDataCommand")
+    @patch("superset.common.query_context_factory.QueryContextFactory")
+    def test_empty_bubble_saved_metric_cast_inference_is_unambiguous(
+        self,
+        mock_factory: Mock,
+        mock_command: Mock,
+        expression: str,
+        expected_error: str | None,
+    ) -> None:
+        """Only simple, comment-free CAST targets provide static type proof."""
+        ds = _orm_dataset(metric_names=["cast_metric"])
+        ds.metrics[0].expression = expression
+        ds.metrics[0].metric_type = None
+        ds.metrics[0].d3format = None
+        config = BubbleChartConfig(
+            entity=ColumnRef(name="name"),
+            x=ColumnRef(name="cast_metric", saved_metric=True),
+            y=ColumnRef(name="num", aggregate="MAX"),
+            size=ColumnRef(name="num", aggregate="SUM"),
+        )
+        mock_factory.return_value.create.return_value = Mock()
+        mock_command.return_value.run.return_value = {"queries": [{"data": []}]}
+
+        result = validate_and_compile(
+            config,
+            map_bubble_config(config),
+            ds,
+            run_compile_check=True,
+        )
+
+        assert result.success is (expected_error is None)
+        if expected_error is not None:
+            assert result.error_obj is not None
+            assert result.error_obj.error_code == expected_error
 
     def test_pivot_table_bad_row_rejected(self):
         ds = _orm_dataset()
@@ -358,6 +969,29 @@ class TestAdhocFiltersFromFormData:
         }
         result = validate_and_compile(config, form_data, ds, run_compile_check=False)
         assert result.success, result.error
+
+    @pytest.mark.parametrize("clause", [None, 7])
+    def test_malformed_cached_filter_clause_is_actionable(self, clause):
+        ds = _orm_dataset()
+        config = TableChartConfig(columns=[ColumnRef(name="gender")])
+        form_data = {
+            "adhoc_filters": [
+                {
+                    "expressionType": "SIMPLE",
+                    "clause": clause,
+                    "subject": "gender",
+                    "operator": "==",
+                    "comparator": "boy",
+                }
+            ]
+        }
+
+        result = validate_and_compile(config, form_data, ds, run_compile_check=False)
+
+        assert not result.success
+        assert result.error_obj is not None
+        assert result.error_obj.error_type == "invalid_filter"
+        assert "clause must be a string" in result.error_obj.message
 
     def test_sql_expression_filter_skipped(self):
         """SQL-expression filters carry a free-form ``sqlExpression`` we can't

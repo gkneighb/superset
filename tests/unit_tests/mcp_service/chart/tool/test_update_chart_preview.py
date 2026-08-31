@@ -32,6 +32,7 @@ from superset.mcp_service.chart.chart_utils import map_big_number_config
 from superset.mcp_service.chart.schemas import (
     AxisConfig,
     BigNumberChartConfig,
+    BubbleChartConfig,
     ColumnRef,
     FilterConfig,
     InteractivePivotChartConfig,
@@ -999,6 +1000,77 @@ class TestUpdateChartPreview:
         assert result["error"] is None
         assert result["warnings"] == []
         mock_get_previous_form_data.assert_called_once_with("valid_key_12345")
+
+    @patch.object(update_chart_preview_module, "validate_and_compile")
+    @patch.object(update_chart_preview_module, "has_dataset_access", return_value=True)
+    @patch("superset.daos.dataset.DatasetDAO.find_by_id")
+    @patch.object(update_chart_preview_module, "analyze_chart_semantics")
+    @patch.object(update_chart_preview_module, "analyze_chart_capabilities")
+    @patch.object(update_chart_preview_module, "generate_explore_link")
+    @patch.object(update_chart_preview_module, "_get_previous_form_data")
+    @patch.object(update_chart_preview_module, "_find_dataset")
+    @patch("superset.mcp_service.auth.get_user_from_request")
+    def test_preserves_cached_bubble_presentation_on_product_path(
+        self,
+        mock_get_user_from_request,
+        mock_find_dataset,
+        mock_get_previous_form_data,
+        mock_generate_explore_link,
+        mock_analyze_chart_capabilities,
+        mock_analyze_chart_semantics,
+        mock_find_by_id,
+        unused_access_mock,
+        mock_validate_and_compile,
+    ) -> None:
+        """A form_data_key iteration retains Bubble's UI-only controls."""
+        mock_get_user_from_request.return_value = Mock(id=1)
+        mock_find_dataset.return_value = _mock_dataset(id=3)
+        mock_find_by_id.return_value = _mock_dataset(id=3)
+        mock_validate_and_compile.return_value = Mock(success=True)
+        mock_get_previous_form_data.return_value = {
+            "viz_type": "bubble_v2",
+            "max_bubble_size": "75",
+            "opacity": 0.4,
+            "xAxisFormat": "$,.2f",
+            "tooltipSizeFormat": ",.0f",
+        }
+        mock_generate_explore_link.return_value = (
+            "http://localhost:8088/explore/?form_data_key=new_preview_key"
+        )
+        mock_analyze_chart_capabilities.return_value = None
+        mock_analyze_chart_semantics.return_value = None
+        request = UpdateChartPreviewRequest(
+            form_data_key="valid_key_12345",
+            dataset_id=3,
+            config=BubbleChartConfig(
+                entity=ColumnRef(name="country"),
+                x=ColumnRef(name="gdp", aggregate="AVG"),
+                y=ColumnRef(name="life_expectancy", aggregate="AVG"),
+                size=ColumnRef(name="population", aggregate="SUM"),
+            ),
+            generate_preview=False,
+        )
+
+        result = update_chart_preview_module.update_chart_preview(
+            request=request, ctx=Mock()
+        )
+
+        generated = mock_generate_explore_link.call_args.args[1]
+        assert {
+            key: generated[key]
+            for key in (
+                "max_bubble_size",
+                "opacity",
+                "xAxisFormat",
+                "tooltipSizeFormat",
+            )
+        } == {
+            "max_bubble_size": "75",
+            "opacity": 0.4,
+            "xAxisFormat": "$,.2f",
+            "tooltipSizeFormat": ",.0f",
+        }
+        assert result["success"] is True
 
     @patch.object(update_chart_preview_module, "validate_and_compile")
     @patch.object(update_chart_preview_module, "has_dataset_access", return_value=True)

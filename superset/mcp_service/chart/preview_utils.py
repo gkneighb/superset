@@ -38,15 +38,117 @@ logger = logging.getLogger(__name__)
 SUPPORTED_FORM_DATA_PREVIEW_FORMATS = frozenset({"ascii", "table", "vega_lite"})
 
 
-def _build_query_columns(form_data: Dict[str, Any]) -> list[str]:
-    """Build query columns list from form_data, including both x_axis and groupby.
+def _bubble_metric_field(metric: Any) -> str | None:
+    """Compatibility wrapper around Bubble's shared result-field resolver."""
+    from superset.mcp_service.chart.plugins.bubble import bubble_metric_field
 
-    Delegates to the shared builder so the MCP and dashboard-export paths stay in
-    sync (single source of truth).
-    """
-    from superset.common.form_data_query_context import columns_from_form_data
+    return bubble_metric_field(metric)
 
-    return columns_from_form_data(form_data)
+
+def _build_bubble_vega_lite_spec(
+    data: List[Any], form_data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build a Bubble-specific point specification from native form data."""
+    entity = form_data.get("entity")
+    series = form_data.get("series")
+    x_field = _bubble_metric_field(form_data.get("x"))
+    y_field = _bubble_metric_field(form_data.get("y"))
+    size_field = _bubble_metric_field(form_data.get("size"))
+
+    encoding: Dict[str, Any] = {}
+    if x_field:
+        encoding["x"] = {
+            "field": x_field,
+            "type": "quantitative",
+            "title": x_field,
+        }
+    if y_field:
+        encoding["y"] = {
+            "field": y_field,
+            "type": "quantitative",
+            "title": y_field,
+        }
+    if size_field:
+        encoding["size"] = {
+            "field": size_field,
+            "type": "quantitative",
+            "title": size_field,
+        }
+    if isinstance(entity, str) and entity:
+        encoding["detail"] = {"field": entity, "type": "nominal"}
+    if isinstance(series, str) and series:
+        encoding["color"] = {
+            "field": series,
+            "type": "nominal",
+            "title": series,
+        }
+
+    quantitative_fields = {x_field, y_field, size_field}
+    tooltip_fields = [
+        field
+        for field in (entity, series, x_field, y_field, size_field)
+        if isinstance(field, str) and field
+    ]
+    encoding["tooltip"] = [
+        {
+            "field": field,
+            "type": "quantitative" if field in quantitative_fields else "nominal",
+        }
+        for field in dict.fromkeys(tooltip_fields)
+    ]
+
+    return {
+        "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+        "data": {"values": data},
+        "mark": {"type": "point", "filled": True, "tooltip": True},
+        "encoding": encoding,
+    }
+
+
+def _validate_bubble_preview_data(
+    data: List[Any], form_data: Dict[str, Any]
+) -> ChartError | None:
+    """Require both valid Bubble query output and renderable preview rows."""
+    from superset.mcp_service.chart.plugins.bubble import (
+        validate_bubble_query_output,
+    )
+
+    output_error = validate_bubble_query_output(
+        data,
+        form_data,
+        require_runtime_numeric_proof=False,
+    )
+    if output_error is not None:
+        return output_error
+    if not data:
+        return ChartError(
+            error="No data available for Vega-Lite visualization",
+            error_type="NoDataError",
+        )
+    return None
+
+
+def _build_query_columns(form_data: Dict[str, Any]) -> list[Any]:
+    """Compatibility wrapper around the shared query-column builder."""
+    from superset.mcp_service.chart.chart_helpers import build_query_columns
+
+    return build_query_columns(form_data)
+
+
+def _build_query_metrics(form_data: Dict[str, Any]) -> list[Any]:
+    """Compatibility wrapper around the shared query-metric builder."""
+    from superset.mcp_service.chart.chart_helpers import build_query_metrics
+
+    return build_query_metrics(form_data)
+
+
+def _build_query_fields(
+    form_data: Dict[str, Any],
+) -> tuple[list[Any], list[Any]]:
+    """Compatibility wrapper around the shared query-field builder."""
+    from superset.mcp_service.chart.chart_helpers import build_query_fields
+
+    return build_query_fields(form_data)
 
 
 def generate_preview_from_form_data(
@@ -77,40 +179,34 @@ def generate_preview_from_form_data(
 
         # Create query context from form data using factory
         from superset.common.query_context_factory import QueryContextFactory
+        from superset.mcp_service.chart.chart_helpers import (
+            apply_bubble_ordering,
+            build_query_fields,
+        )
         from superset.mcp_service.chart.chart_utils import (
             adhoc_filters_to_query_filters,
         )
 
-        # Build columns list: include x_axis and groupby for XY charts,
-        # fall back to form_data "columns" for table charts
-        columns = _build_query_columns(form_data)
+        # Resolve standard query fields plus chart-specific aliases such as
+        # Bubble's entity/series dimensions and x/y/size metrics.
+        columns, metrics = build_query_fields(form_data)
 
         query_filters = adhoc_filters_to_query_filters(
             form_data.get("adhoc_filters", [])
         )
 
-        # Big Number charts use singular "metric" instead of "metrics"
-        metrics = form_data.get("metrics", [])
-        if not metrics and form_data.get("metric"):
-            metrics = [form_data["metric"]]
-
-        # Big Number with trendline uses granularity_sqla as the time column
-        if not columns and form_data.get("granularity_sqla"):
-            columns = [form_data["granularity_sqla"]]
-
         factory = QueryContextFactory()
+        query: dict[str, Any] = {
+            "columns": columns,
+            "metrics": metrics,
+            "row_limit": form_data.get("row_limit", 100),
+            "filters": query_filters,
+            "time_range": form_data.get("time_range", "No filter"),
+        }
+        apply_bubble_ordering(query, form_data)
         query_context_obj = factory.create(
             datasource={"id": dataset_id, "type": "table"},
-            queries=[
-                {
-                    "columns": columns,
-                    "metrics": metrics,
-                    "orderby": form_data.get("orderby", []),
-                    "row_limit": form_data.get("row_limit", 100),
-                    "filters": query_filters,
-                    "time_range": form_data.get("time_range", "No filter"),
-                }
-            ],
+            queries=[query],
             form_data=form_data,
         )
 
@@ -471,9 +567,21 @@ def _is_nan(value: Any) -> bool:
 
 def _generate_vega_lite_preview_from_data(  # noqa: C901
     data: List[Dict[str, Any]], form_data: Dict[str, Any]
-) -> VegaLitePreview:
+) -> VegaLitePreview | ChartError:
     """Generate Vega-Lite preview from raw data and form_data."""
     viz_type = form_data.get("viz_type", "table")
+
+    if viz_type == "bubble_v2":
+        if error := _validate_bubble_preview_data(data, form_data):
+            return error
+        spec = _build_bubble_vega_lite_spec(data, form_data)
+        spec["width"] = "container"
+        spec["height"] = 400
+        return VegaLitePreview(
+            specification=spec,
+            data_url=None,
+            supports_streaming=False,
+        )
 
     # Map Superset viz types to Vega-Lite marks
     viz_to_mark = {
@@ -579,7 +687,7 @@ def _generate_vega_lite_preview_from_data(  # noqa: C901
 
     # Add responsive sizing - Vega-Lite supports "container" as a special width value
     spec["width"] = "container"
-    spec["height"] = 400  # type: ignore
+    spec["height"] = 400
 
     # Add interactivity
     if mark in ["line", "point", "bar", "area"]:

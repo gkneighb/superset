@@ -116,6 +116,14 @@ class ChartTypePlugin(Protocol):
         """
         ...
 
+    def validate_dataset(
+        self,
+        config: Any,
+        dataset_context: Any,
+    ) -> ChartGenerationError | None:
+        """Run chart-specific validation that needs dataset metadata."""
+        ...
+
     def normalize_column_refs(
         self,
         config: Any,
@@ -230,6 +238,13 @@ class BaseChartPlugin:
         config: Any,
         form_data: dict[str, Any],
         dataset_id: int | str | None = None,
+    ) -> ChartGenerationError | None:
+        return None
+
+    def validate_dataset(
+        self,
+        config: Any,
+        dataset_context: Any,
     ) -> ChartGenerationError | None:
         return None
 

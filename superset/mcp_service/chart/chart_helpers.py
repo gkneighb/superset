@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+MCP_DASHBOARD_TIME_FILTER_SUBJECT = "_mcp_dashboard_time_filter_subject"
+
 # extra_form_data override targets that the query object actually reads. Note
 # that ``time_grain`` is deliberately absent: the query object has no such field
 # and nothing downstream consumes it, matching the REST path, where
@@ -453,6 +455,57 @@ def resolve_groupby(form_data: dict[str, Any]) -> list[Any]:
     return groupby
 
 
+def build_query_columns(form_data: dict[str, Any]) -> list[Any]:
+    """Build query columns, including chart-specific grouping aliases."""
+    from superset.common.form_data_query_context import columns_from_form_data
+
+    columns = columns_from_form_data(form_data)
+    if not columns:
+        for column in list(form_data.get("groupbyRows") or []) + list(
+            form_data.get("groupbyColumns") or []
+        ):
+            if column not in columns:
+                columns.append(column)
+    for column in form_data.get("groupby_b") or []:
+        if column not in columns:
+            columns.append(column)
+    return columns
+
+
+def build_query_metrics(form_data: dict[str, Any]) -> list[Any]:
+    """Build query metrics, including mixed-timeseries secondary metrics."""
+    metrics, _ = resolve_metrics_and_groupby(form_data)
+    for metric in form_data.get("metrics_b") or []:
+        if metric not in metrics:
+            metrics.append(metric)
+    return metrics
+
+
+def build_query_fields(form_data: dict[str, Any]) -> tuple[list[Any], list[Any]]:
+    """Resolve query columns and metrics using chart-aware shared helpers."""
+    _, chart_columns = resolve_metrics_and_groupby(form_data)
+    metrics = build_query_metrics(form_data)
+    columns = build_query_columns(form_data)
+    for column in chart_columns:
+        if column not in columns:
+            columns.append(column)
+
+    # Big Number with trendline uses granularity_sqla as the time column.
+    if not columns and form_data.get("granularity_sqla"):
+        columns = [form_data["granularity_sqla"]]
+    return columns, metrics
+
+
+def apply_bubble_ordering(query: dict[str, Any], form_data: dict[str, Any]) -> None:
+    """Mirror the Bubble frontend's scalar orderby-to-query translation."""
+    if form_data.get("viz_type") not in {"bubble", "bubble_v2"}:
+        return
+    if order_by := form_data.get("orderby"):
+        query["orderby"] = [[order_by, not form_data.get("order_desc", True)]]
+    else:
+        query.pop("orderby", None)
+
+
 def resolve_metrics_and_groupby(
     form_data: dict[str, Any],
     chart: Any | None = None,
@@ -506,6 +559,7 @@ def _build_single_query_dict(
     if order_desc is not None:
         qd["order_desc"] = order_desc
     apply_form_data_filters_to_query(qd, form_data)
+    apply_bubble_ordering(qd, form_data)
     return qd
 
 

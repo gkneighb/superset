@@ -31,14 +31,17 @@ from superset.commands.exceptions import CommandException
 from superset.exceptions import OAuth2Error, OAuth2RedirectError, SupersetException
 from superset.extensions import event_logger
 from superset.mcp_service.auth import has_dataset_access
-from superset.mcp_service.chart.chart_helpers import extract_form_data_key_from_url
+from superset.mcp_service.chart.chart_helpers import (
+    extract_form_data_key_from_url,
+    MCP_DASHBOARD_TIME_FILTER_SUBJECT,
+)
 from superset.mcp_service.chart.chart_utils import (
     analyze_chart_capabilities,
     analyze_chart_semantics,
     generate_chart_name,
     generate_explore_link,
     map_config_to_form_data,
-    MCP_DASHBOARD_TIME_FILTER_SUBJECT,
+    merge_bubble_presentation_config,
     merge_interactive_pivot_ui_config,
     merge_table_column_config,
     NO_TIME_RANGE,
@@ -240,6 +243,7 @@ def update_chart_preview(  # noqa: C901
             if previous_form_data:
                 merge_table_column_config(previous_form_data, new_form_data)
                 merge_interactive_pivot_ui_config(previous_form_data, new_form_data)
+                merge_bubble_presentation_config(previous_form_data, new_form_data)
 
             # Tier-1 schema validation against the dataset (no DB roundtrip).
             # Runs AFTER the filter merge so filter columns are also validated.

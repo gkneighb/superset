@@ -86,7 +86,7 @@ async def generate_chart(  # noqa: C901
     - LLM clients MUST display returned chart URL to users
     - Use numeric dataset ID or UUID (NOT schema.table_name format)
     - MUST include chart_type in config (one of: 'xy', 'table', 'pie',
-      'pivot_table', 'mixed_timeseries', 'handlebars', 'big_number',
+      'bubble', 'pivot_table', 'mixed_timeseries', 'handlebars', 'big_number',
       'histogram', 'box_plot', 'waterfall', plus host-gated types returned by
       get_chart_type_schema such as 'interactive_pivot')
 
@@ -106,6 +106,9 @@ async def generate_chart(  # noqa: C901
 
     - chart_type='pie' for pie/donut charts.
       Required fields: dimension, metric
+
+    - chart_type='bubble' for Bubble V2 charts.
+      Required fields: entity, x, y, size; optional: series
 
     - chart_type='pivot_table' for pivot table visualizations.
       Required fields: rows, metrics (columns is optional, for cross-tabs)
@@ -140,6 +143,7 @@ async def generate_chart(  # noqa: C901
     - "bar chart" / "line chart" / "area chart" / "scatter plot"
       -> chart_type='xy', kind='bar'/'line'/'area'/'scatter'
     - "pie chart" / "donut chart" -> chart_type='pie'
+    - "bubble chart" -> chart_type='bubble'
     - "table" / "data grid" -> chart_type='table'
     - "pivot table" / "cross-tab" -> chart_type='pivot_table'
     - "interactive pivot" / "AG Grid pivot" -> chart_type='interactive_pivot'
@@ -405,7 +409,7 @@ async def generate_chart(  # noqa: C901
             # Compile before persisting. A failed query must not leave a broken
             # chart row behind and then rely on a later transaction to delete it.
             with event_logger.log_context(action="mcp.generate_chart.compile_check"):
-                compile_result = _compile_chart(form_data, dataset.id)
+                compile_result = validate_and_compile(config, form_data, dataset)
             if not compile_result.success:
                 logger.warning(
                     "Compile check failed before chart creation: %s",
@@ -594,7 +598,7 @@ async def generate_chart(  # noqa: C901
             # Compile check for preview-only mode
             # Validate dataset existence and user access before running queries
             await ctx.report_progress(3, 5, "Running compile check (test query)")
-            numeric_dataset_id: int | None = None
+            dataset = None
             from superset.daos.dataset import DatasetDAO
 
             if isinstance(request.dataset_id, int) or (
@@ -605,19 +609,21 @@ async def generate_chart(  # noqa: C901
                     if isinstance(request.dataset_id, str)
                     else request.dataset_id
                 )
-                ds = DatasetDAO.find_by_id(candidate_id)
-                if ds and has_dataset_access(ds):
-                    numeric_dataset_id = ds.id
+                candidate_dataset = DatasetDAO.find_by_id(candidate_id)
+                if candidate_dataset and has_dataset_access(candidate_dataset):
+                    dataset = candidate_dataset
             else:
-                ds = DatasetDAO.find_by_id(request.dataset_id, id_column="uuid")
-                if ds and has_dataset_access(ds):
-                    numeric_dataset_id = ds.id
+                candidate_dataset = DatasetDAO.find_by_id(
+                    request.dataset_id, id_column="uuid"
+                )
+                if candidate_dataset and has_dataset_access(candidate_dataset):
+                    dataset = candidate_dataset
 
-            if numeric_dataset_id is not None:
+            if dataset is not None:
                 with event_logger.log_context(
                     action="mcp.generate_chart.compile_check"
                 ):
-                    compile_result = _compile_chart(form_data, numeric_dataset_id)
+                    compile_result = validate_and_compile(config, form_data, dataset)
                 if not compile_result.success:
                     await ctx.warning(
                         "Chart compile check failed: error=%s" % (compile_result.error,)

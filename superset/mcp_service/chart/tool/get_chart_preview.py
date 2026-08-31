@@ -35,10 +35,16 @@ from superset.mcp_service.chart.ascii_charts import (
     generate_ascii_table,
 )
 from superset.mcp_service.chart.chart_helpers import (
+    build_query_columns as _shared_build_query_columns,
     build_query_context_from_form_data,
+    build_query_metrics as _shared_build_query_metrics,
     find_chart_by_identifier,
 )
 from superset.mcp_service.chart.chart_utils import validate_chart_dataset
+from superset.mcp_service.chart.preview_utils import (
+    _build_bubble_vega_lite_spec,
+    _validate_bubble_preview_data,
+)
 from superset.mcp_service.chart.schemas import (
     AccessibilityMetadata,
     ASCIIPreview,
@@ -56,7 +62,6 @@ from superset.mcp_service.utils.oauth2_utils import (
     OAUTH2_CONFIG_ERROR_MESSAGE,
 )
 from superset.mcp_service.utils.url_utils import get_superset_base_url
-from superset.superset_typing import Column, Metric
 
 logger = logging.getLogger(__name__)
 
@@ -74,73 +79,14 @@ class ChartLike(Protocol):
     uuid: Any
 
 
-def _build_query_columns(form_data: Dict[str, Any]) -> list[Column]:
-    """Build query columns list from form_data, including both x_axis and groupby.
-
-    Handles chart-type-specific keys:
-    - Standard charts: ``groupby`` + ``x_axis``
-    - Pivot tables: ``groupbyColumns`` + ``groupbyRows`` (when ``groupby`` is absent)
-    - Mixed timeseries: ``groupby_b`` (secondary groupby)
-    """
-    x_axis_config: Column | None = form_data.get("x_axis")
-    groupby_columns: list[Column] = form_data.get("groupby") or []
-
-    # Pivot tables store dimensions under groupbyColumns / groupbyRows
-    if not groupby_columns:
-        pivot_rows: list[Column] = form_data.get("groupbyRows") or []
-        pivot_cols: list[Column] = form_data.get("groupbyColumns") or []
-        groupby_columns = list(pivot_rows) + list(pivot_cols)
-
-    # Mixed timeseries stores secondary groupby under groupby_b
-    groupby_b: list[Column] = form_data.get("groupby_b") or []
-    for col in groupby_b:
-        if col not in groupby_columns:
-            groupby_columns.append(col)
-
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    columns: list[Column] = []
-
-    def _add_unique(col: Column) -> None:
-        key = col if isinstance(col, str) else col.get("label", str(col))
-        if key not in seen:
-            columns.append(col)
-            seen.add(key)
-
-    if x_axis_config and isinstance(x_axis_config, str):
-        _add_unique(x_axis_config)
-    elif x_axis_config and isinstance(x_axis_config, dict):
-        col_name = x_axis_config.get("column_name")
-        if col_name and isinstance(col_name, str):
-            _add_unique(col_name)
-
-    for col in groupby_columns:
-        _add_unique(col)
-
-    return columns
+def _build_query_columns(form_data: Dict[str, Any]) -> list[Any]:
+    """Compatibility wrapper around the shared preview/query field helper."""
+    return _shared_build_query_columns(form_data)
 
 
-def _build_query_metrics(form_data: Dict[str, Any]) -> list[Metric]:
-    """Extract metrics from form_data, handling chart-type variations.
-
-    Handles:
-    - ``metrics`` (plural) — most chart types
-    - ``metric`` (singular) — Pie charts
-    - ``metrics_b`` — secondary y-axis in Mixed Timeseries charts
-    """
-    metrics: list[Metric] = list(form_data.get("metrics") or [])
-    if not metrics:
-        singular: Metric | None = form_data.get("metric")
-        if singular:
-            metrics = [singular]
-
-    # Mixed timeseries stores the second y-axis metrics under metrics_b
-    metrics_b: list[Metric] = form_data.get("metrics_b") or []
-    for m in metrics_b:
-        if m not in metrics:
-            metrics.append(m)
-
-    return metrics
+def _build_query_metrics(form_data: Dict[str, Any]) -> list[Any]:
+    """Compatibility wrapper around the shared preview/query field helper."""
+    return _shared_build_query_metrics(form_data)
 
 
 def _first_query_has_fields(query_context: Any) -> bool:
@@ -366,6 +312,24 @@ class VegaLitePreviewStrategy(PreviewFormatStrategy):
         except (ValueError, TypeError):
             return None
 
+    def _validate_chart_data(
+        self, chart_data: Any, form_data: Dict[str, Any]
+    ) -> ChartError | None:
+        """Validate data presence and Bubble-specific quantitative fields."""
+        if not isinstance(chart_data, list):
+            return ChartError(
+                error="No data available for Vega-Lite visualization",
+                error_type="NoDataError",
+            )
+        if getattr(self.chart, "viz_type", None) == "bubble_v2":
+            return _validate_bubble_preview_data(chart_data, form_data)
+        if not chart_data:
+            return ChartError(
+                error="No data available for Vega-Lite visualization",
+                error_type="NoDataError",
+            )
+        return None
+
     def generate(self) -> VegaLitePreview | ChartError:
         """Generate Vega-Lite JSON specification from chart data."""
         try:
@@ -423,14 +387,13 @@ class VegaLitePreviewStrategy(PreviewFormatStrategy):
             if result and "queries" in result and len(result["queries"]) > 0:
                 chart_data = result["queries"][0].get("data", [])
 
-            if not chart_data or not isinstance(chart_data, list):
-                return ChartError(
-                    error="No data available for Vega-Lite visualization",
-                    error_type="NoDataError",
-                )
+            if error := self._validate_chart_data(chart_data, form_data):
+                return error
 
             # Convert Superset chart type to Vega-Lite specification
             vega_spec = self._create_vega_lite_spec(chart_data)
+            if isinstance(vega_spec, ChartError):
+                return vega_spec
 
             return VegaLitePreview(
                 type="vega_lite",
@@ -454,8 +417,26 @@ class VegaLitePreviewStrategy(PreviewFormatStrategy):
                 error_type="VegaLiteGenerationError",
             )
 
-    def _create_vega_lite_spec(self, data: List[Any]) -> Dict[str, Any]:
+    def _create_vega_lite_spec(self, data: List[Any]) -> Dict[str, Any] | ChartError:
         """Create Vega-Lite specification from chart data."""
+        viz_type = getattr(self.chart, "viz_type", "table") or "table"
+        if viz_type == "bubble_v2":
+            form_data = self._get_form_data() or {}
+            if error := _validate_bubble_preview_data(data, form_data):
+                return error
+            bubble_spec = _build_bubble_vega_lite_spec(data, form_data)
+            bubble_spec.update(
+                {
+                    "description": (
+                        "Chart preview for "
+                        f"{getattr(self.chart, 'slice_name', 'Untitled Chart')}"
+                    ),
+                    "width": self.request.width or 400,
+                    "height": self.request.height or 300,
+                }
+            )
+            return bubble_spec
+
         if not data:
             return {"data": {"values": []}, "mark": "point"}
 
@@ -463,9 +444,6 @@ class VegaLitePreviewStrategy(PreviewFormatStrategy):
         first_row = data[0] if data else {}
         fields = list(first_row.keys()) if first_row else []
         field_types = self._analyze_field_types(data, fields)
-
-        # Determine chart type based on Superset viz_type
-        viz_type = getattr(self.chart, "viz_type", "table") or "table"
 
         # Basic Vega-Lite specification
         spec = {

@@ -28,6 +28,7 @@ from sqlalchemy.orm.exc import DetachedInstanceError
 
 from superset.mcp_service.chart.schemas import (
     AxisConfig,
+    BubbleChartConfig,
     ColumnRef,
     FilterConfig,
     GenerateChartRequest,
@@ -422,6 +423,165 @@ class TestCompileChart:
         assert "invalid metric" in (result.error or "")
 
 
+def _bubble_dataset(saved_expression: str | None = None) -> Mock:
+    """Build dataset metadata used by product-path Bubble generation tests."""
+    columns = []
+    for name, column_type, is_numeric in (
+        ("name", "TEXT", False),
+        ("num", "DOUBLE", True),
+    ):
+        column = Mock()
+        column.column_name = name
+        column.type = column_type
+        column.is_temporal = False
+        column.is_numeric = is_numeric
+        columns.append(column)
+
+    metrics = []
+    if saved_expression is not None:
+        metric = Mock()
+        metric.metric_name = "unknown_metric"
+        metric.expression = saved_expression
+        metric.description = None
+        metric.metric_type = None
+        metric.d3format = None
+        metrics.append(metric)
+
+    dataset = Mock()
+    dataset.id = 1
+    dataset.datasource_name = "test_table"
+    dataset.table_name = "test_table"
+    dataset.schema = None
+    dataset.sql = None
+    dataset.columns = columns
+    dataset.metrics = metrics
+    dataset.database = Mock(database_name="examples", db_engine_spec=None)
+    return dataset
+
+
+async def _generate_empty_bubble(
+    *, save_chart: bool, unknown_metric: bool
+) -> tuple[Any, Mock]:
+    """Run a saved or preview-only Bubble generation against an empty query."""
+    saved_expression = "SOME_VENDOR_FUNCTION(num)" if unknown_metric else None
+    dataset = _bubble_dataset(saved_expression)
+    config = BubbleChartConfig(
+        entity=ColumnRef(name="name"),
+        x=(
+            ColumnRef(name="unknown_metric", saved_metric=True)
+            if unknown_metric
+            else ColumnRef(name="num", aggregate="AVG")
+        ),
+        y=ColumnRef(name="num", aggregate="MAX"),
+        size=ColumnRef(name="num", aggregate="SUM"),
+    )
+    request = GenerateChartRequest(
+        dataset_id="1",
+        config=config,
+        save_chart=save_chart,
+        generate_preview=not save_chart,
+        preview_formats=["url"],
+    )
+    ctx = MagicMock()
+    ctx.info = AsyncMock()
+    ctx.debug = AsyncMock()
+    ctx.warning = AsyncMock()
+    ctx.error = AsyncMock()
+    ctx.report_progress = AsyncMock()
+
+    validation_result = Mock(
+        is_valid=True,
+        request=request,
+        warnings={},
+        error=None,
+    )
+    chart = _make_mock_chart()
+    chart.datasource_id = dataset.id
+    create_command = Mock(return_value=Mock(run=Mock(return_value=chart)))
+
+    with (
+        patch(
+            "superset.mcp_service.auth.get_user_from_request",
+            return_value=Mock(id=1, username="admin", roles=[], groups=[]),
+        ),
+        patch(
+            "superset.mcp_service.chart.validation.ValidationPipeline."
+            "validate_request_with_warnings",
+            return_value=validation_result,
+        ),
+        patch("superset.daos.dataset.DatasetDAO.find_by_id", return_value=dataset),
+        patch(
+            "superset.mcp_service.chart.tool.generate_chart.has_dataset_access",
+            return_value=True,
+        ),
+        patch(
+            "superset.common.query_context_factory.QueryContextFactory"
+        ) as query_factory,
+        patch(
+            "superset.commands.chart.data.get_data_command.ChartDataCommand"
+        ) as chart_data_command,
+        patch("superset.commands.chart.create.CreateChartCommand", create_command),
+        patch("superset.db.session", MagicMock()),
+        patch(
+            "superset.mcp_service.chart.tool.generate_chart.validate_chart_dataset",
+            return_value=Mock(is_valid=True, warnings=[], error=None),
+        ),
+        patch(
+            "superset.daos.chart.ChartDAO",
+            Mock(find_by_id=Mock(return_value=chart)),
+        ),
+        patch(
+            "superset.mcp_service.commands.create_form_data.MCPCreateFormDataCommand",
+            return_value=Mock(run=Mock(return_value="form-data-key")),
+        ),
+        patch(
+            "superset.mcp_service.chart.chart_utils.generate_explore_link",
+            return_value=("http://localhost:9001/explore/?form_data_key=form-data-key"),
+        ),
+        patch(
+            "superset.mcp_service.chart.tool.generate_chart.get_superset_base_url",
+            return_value="http://localhost:8088",
+        ),
+    ):
+        query_factory.return_value.create.return_value = Mock()
+        chart_data_command.return_value.run.return_value = {"queries": [{"data": []}]}
+        result = await generate_chart(request, ctx=ctx)
+
+    return result, create_command
+
+
+@pytest.mark.parametrize("save_chart", [True, False])
+@pytest.mark.asyncio
+async def test_generate_empty_bubble_with_static_numeric_proof_succeeds(
+    save_chart: bool,
+) -> None:
+    """Saved and preview-only product paths accept proven numeric empty data."""
+    result, create_command = await _generate_empty_bubble(
+        save_chart=save_chart, unknown_metric=False
+    )
+
+    assert result.success is True
+    assert result.error is None
+    if save_chart:
+        create_command.assert_called_once()
+
+
+@pytest.mark.parametrize("save_chart", [True, False])
+@pytest.mark.asyncio
+async def test_generate_empty_bubble_with_unknown_output_fails_closed(
+    save_chart: bool,
+) -> None:
+    """Saved and preview-only product paths require proof for unknown outputs."""
+    result, create_command = await _generate_empty_bubble(
+        save_chart=save_chart, unknown_metric=True
+    )
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.error_code == "INVALID_BUBBLE_QUERY_DATA"
+    create_command.assert_not_called()
+
+
 def _make_mock_chart(chart_id: int = 42) -> Mock:
     """Create a mock chart with all attributes needed by serialize_chart_object."""
     chart = Mock()
@@ -539,7 +699,7 @@ async def _generate_saved_chart(
         ),
         patch("superset.db.session", session),
         patch(
-            "superset.mcp_service.chart.tool.generate_chart._compile_chart",
+            "superset.mcp_service.chart.tool.generate_chart.validate_and_compile",
             return_value=compile_result or CompileResult(success=True, warnings=[]),
         ),
         patch("superset.daos.chart.ChartDAO", Mock(find_by_id=refetch)),
